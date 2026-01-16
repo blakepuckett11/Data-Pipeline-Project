@@ -88,27 +88,41 @@ class CDCRecordMapper(FieldMapper):
         mappings = {
             # Geography fields
             "state": "state",
+            "stateabbr": "state",  # BRFSS format
             "state_name": "state_name",
+            "statedesc": "state_name",  # BRFSS format
             "county": "county",
             "county_name": "county",
+            "locationname": "county",  # BRFSS format
             "fips": "fips_code",
             "fips_code": "fips_code",
+            "locationid": "fips_code",  # BRFSS format
             "geography": "geography",
             
             # Date fields
             "date": "date",
             "report_date": "date",
             "week_ending": "date",
+            "year": "year",  # BRFSS format
             "period_start": "period_start",
             "period_end": "period_end",
             
             # Value fields
             "value": "value",
+            "data_value": "value",  # BRFSS format
             "cases": "value",
             "deaths": "value",
             "count": "value",
             "rate": "value",
             "percentage": "value",
+            
+            # BRFSS specific fields
+            "measure": "measure",
+            "category": "category",
+            "data_value_unit": "unit",
+            "low_confidence_limit": "value_lower_bound",
+            "high_confidence_limit": "value_upper_bound",
+            "totalpopulation": "sample_size",
             
             # Stratifier fields
             "age_group": "age_group",
@@ -154,6 +168,20 @@ class CDCRecordMapper(FieldMapper):
         # Extract extraction metadata if present
         extraction_metadata = mapped.pop("_extraction_metadata", {})
         
+        # Handle year field for BRFSS data
+        period_start = mapped.get("period_start") or mapped.get("date")
+        period_end = mapped.get("period_end") or mapped.get("date")
+        
+        # If we have a year but no date, create a date from year
+        if not period_start and mapped.get("year"):
+            try:
+                year = int(mapped["year"])
+                from datetime import date
+                period_start = date(year, 1, 1)
+                period_end = date(year, 12, 31)
+            except (ValueError, TypeError):
+                pass
+        
         # Build observation record
         observation = {
             # Geography fields
@@ -164,8 +192,8 @@ class CDCRecordMapper(FieldMapper):
             "geography_level": self._determine_geography_level(mapped),
             
             # Time period fields
-            "period_start": mapped.get("period_start") or mapped.get("date"),
-            "period_end": mapped.get("period_end") or mapped.get("date"),
+            "period_start": period_start,
+            "period_end": period_end,
             
             # Value fields
             "value": mapped.get("value"),
@@ -175,10 +203,11 @@ class CDCRecordMapper(FieldMapper):
             "value_notes": mapped.get("value_notes"),
             
             # Indicator fields
-            "indicator_code": indicator_code or mapped.get("indicator_code"),
-            "indicator_name": indicator_name or mapped.get("indicator_name"),
-            "indicator_unit": mapped.get("unit"),
-            "indicator_description": mapped.get("description"),
+            "indicator_code": indicator_code or mapped.get("measureid") or mapped.get("indicator_code"),
+            "indicator_name": indicator_name or mapped.get("measure") or mapped.get("indicator_name"),
+            "indicator_unit": mapped.get("unit") or mapped.get("data_value_unit"),
+            "indicator_description": mapped.get("description") or mapped.get("short_question_text"),
+            "indicator_category": mapped.get("category"),
             
             # Stratifier fields
             "age_group": mapped.get("age_group"),

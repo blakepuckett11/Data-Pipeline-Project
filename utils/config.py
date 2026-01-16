@@ -22,7 +22,7 @@ class DatabaseConfig:
     host: str = os.getenv("DB_HOST", "localhost")
     port: int = int(os.getenv("DB_PORT", "5432"))
     name: str = os.getenv("DB_NAME", "cdc_health_data")
-    user: str = os.getenv("DB_USER", "postgres")
+    user: str = os.getenv("DB_USER", os.getenv("USER", "postgres"))  # Use current user as default
     password: str = os.getenv("DB_PASSWORD", "")
     
     @property

@@ -117,15 +117,23 @@ class CDCAPIClient:
         url = f"{self.base_url}/{dataset_id}.json"
         
         try:
+            logger.info(f"Fetching metadata from CDC API: {url}")
             self.rate_limiter.wait_if_needed()
             response = self.session.get(url, timeout=self.timeout)
             response.raise_for_status()
             
-            logger.debug(f"Retrieved metadata for dataset {dataset_id}")
-            return response.json()
+            metadata = response.json()
+            logger.info(f"✓ Retrieved metadata for dataset {dataset_id}: {metadata.get('name', 'N/A')}")
+            return metadata
             
+        except requests.exceptions.Timeout:
+            logger.error(f"Timeout fetching metadata for {dataset_id} (timeout: {self.timeout}s)")
+            raise Exception(f"API request timed out after {self.timeout} seconds. The dataset may be unavailable or the API is slow.")
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to fetch metadata for {dataset_id}: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                logger.error(f"Response status: {e.response.status_code}")
+                logger.error(f"Response body: {e.response.text[:200]}")
             raise
     
     def get_dataset_data(
@@ -134,17 +142,19 @@ class CDCAPIClient:
         limit: Optional[int] = None,
         offset: Optional[int] = None,
         where: Optional[str] = None,
-        order: Optional[str] = None
+        order: Optional[str] = None,
+        use_resource_endpoint: bool = False
     ) -> List[Dict[str, Any]]:
         """
         Fetch data from a CDC dataset
         
         Args:
-            dataset_id: Socrata dataset ID
+            dataset_id: Socrata dataset ID or resource ID
             limit: Maximum number of rows to return
             offset: Number of rows to skip (for pagination)
             where: SoQL WHERE clause (e.g., "state='CA'")
             order: SoQL ORDER BY clause (e.g., "date DESC")
+            use_resource_endpoint: If True, use /resource/ endpoint instead of /api/views/
             
         Returns:
             List of records as dictionaries
@@ -157,7 +167,13 @@ class CDCAPIClient:
                 order="date DESC"
             )
         """
-        url = f"{self.base_url}/{dataset_id}/rows.json"
+        # Support both endpoint formats
+        if use_resource_endpoint:
+            # Format: https://data.cdc.gov/resource/{dataset_id}.json
+            url = f"https://data.cdc.gov/resource/{dataset_id}.json"
+        else:
+            # Format: https://data.cdc.gov/api/views/{dataset_id}/rows.json
+            url = f"{self.base_url}/{dataset_id}/rows.json"
         params = {}
         
         if limit:
@@ -170,18 +186,53 @@ class CDCAPIClient:
             params["$order"] = order
         
         try:
+            logger.debug(f"Fetching data from CDC API: {url} (limit={limit}, offset={offset})")
             self.rate_limiter.wait_if_needed()
             response = self.session.get(url, params=params, timeout=self.timeout)
             response.raise_for_status()
             
             data = response.json()
-            records = [row.get("row", {}) for row in data] if isinstance(data, list) else []
             
-            logger.info(f"Retrieved {len(records)} records from dataset {dataset_id}")
+            # Socrata API can return data in different formats:
+            # 1. List of objects with "row" key: [{"row": {...}}, ...] (old /api/views/ format)
+            # 2. Dictionary with "data" key: {"data": [[...], ...]}
+            # 3. Direct list: [{...}, ...] (new /resource/ format - what we're getting)
+            
+            records = []
+            if isinstance(data, list):
+                # Check if it's format 1: list with "row" keys
+                if len(data) > 0 and isinstance(data[0], dict) and "row" in data[0]:
+                    records = [row.get("row", {}) for row in data]
+                # Format 3: direct list of records (most common for /resource/ endpoint)
+                elif len(data) > 0 and isinstance(data[0], dict):
+                    records = data
+            elif isinstance(data, dict):
+                # Try format 2: dictionary with "data" key
+                if "data" in data:
+                    # Data is usually a list of lists, need to map to column names
+                    logger.warning(f"Dataset {dataset_id} uses 'data' format - may need column mapping")
+                    records = []
+                else:
+                    # Try other dictionary formats
+                    records = []
+            
+            if len(records) == 0 and data:
+                # Log the actual structure for debugging
+                logger.warning(f"Unexpected API response format for {dataset_id}")
+                logger.debug(f"Response type: {type(data)}, Length: {len(data) if isinstance(data, list) else 'N/A'}")
+                if isinstance(data, list) and len(data) > 0:
+                    logger.debug(f"First item keys: {list(data[0].keys())[:10] if isinstance(data[0], dict) else 'N/A'}")
+            
+            logger.info(f"✓ Retrieved {len(records)} records from dataset {dataset_id}")
             return records
             
+        except requests.exceptions.Timeout:
+            logger.error(f"Timeout fetching data for {dataset_id} (timeout: {self.timeout}s)")
+            raise Exception(f"API request timed out after {self.timeout} seconds")
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to fetch data for {dataset_id}: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                logger.error(f"Response status: {e.response.status_code}")
             raise
     
     def get_all_dataset_data(
@@ -189,7 +240,8 @@ class CDCAPIClient:
         dataset_id: str,
         batch_size: int = 5000,
         where: Optional[str] = None,
-        order: Optional[str] = None
+        order: Optional[str] = None,
+        use_resource_endpoint: bool = False
     ) -> List[Dict[str, Any]]:
         """
         Fetch all data from a dataset with automatic pagination
@@ -209,24 +261,28 @@ class CDCAPIClient:
         logger.info(f"Fetching all data from dataset {dataset_id} (batch size: {batch_size})")
         
         while True:
+            logger.info(f"Fetching batch starting at offset {offset}...")
             batch = self.get_dataset_data(
                 dataset_id=dataset_id,
                 limit=batch_size,
                 offset=offset,
                 where=where,
-                order=order
+                order=order,
+                use_resource_endpoint=use_resource_endpoint
             )
             
             if not batch:
+                logger.info("No more records to fetch")
                 break
             
             all_records.extend(batch)
             offset += len(batch)
             
-            logger.debug(f"Fetched {len(all_records)} total records so far...")
+            logger.info(f"Progress: {len(all_records)} total records fetched...")
             
             # If we got fewer records than batch_size, we've reached the end
             if len(batch) < batch_size:
+                logger.info("Reached end of dataset")
                 break
         
         logger.info(f"Completed fetching {len(all_records)} total records")

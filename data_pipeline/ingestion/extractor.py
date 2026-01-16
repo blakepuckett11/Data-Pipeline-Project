@@ -35,7 +35,8 @@ class DataExtractor:
         dataset_id: str,
         dataset_name: Optional[str] = None,
         limit: Optional[int] = None,
-        filters: Optional[Dict[str, Any]] = None
+        filters: Optional[Dict[str, Any]] = None,
+        use_resource_endpoint: bool = False
     ) -> Dict[str, Any]:
         """
         Extract data from a CDC dataset
@@ -70,12 +71,14 @@ class DataExtractor:
                 records = self.api_client.get_dataset_data(
                     dataset_id=dataset_id,
                     limit=limit,
-                    where=where_clause
+                    where=where_clause,
+                    use_resource_endpoint=use_resource_endpoint
                 )
             else:
                 records = self.api_client.get_all_dataset_data(
                     dataset_id=dataset_id,
-                    where=where_clause
+                    where=where_clause,
+                    use_resource_endpoint=use_resource_endpoint
                 )
             
             # Add extraction metadata to each record
